@@ -1,9 +1,13 @@
 # Use Ubuntu LTS
-FROM ubuntu:22.04
+#FROM ubuntu:22.04
+
+# NOTE: Using a dev image containing all the required cuda stuff.
+# IMPORTANT: The version (in this case 12.0.0) must be compatible with what's loaded on the bare metal.
+FROM nvidia/cuda:12.0.0-devel-ubuntu22.04
 
 # Define download location variables
 
-ARG FILE_LOCATION="https://ispyfiles.azureedge.net/downloads/Agent_Linux64_5_4_2_0.zip"
+ARG FILE_LOCATION="https://ispyfiles.azureedge.net/downloads/Agent_Linux64_4_9_6_0.zip"
 
 
 ENV FILE_LOCATION_SET=${FILE_LOCATION:+true}
@@ -16,6 +20,12 @@ ARG name
 # Download and install dependencies
 RUN apt-get update \
     && apt-get install -y wget unzip software-properties-common alsa-utils
+
+# Note: to install ffmpeg; you need the nv-codec-headers
+# ffnvcodec
+RUN apt-get install -y git make
+RUN git clone https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
+RUN cd nv-codec-headers && make install && cd ..
 
 # Download/Install iSpy Agent DVR: 
 # Check if we were given a specific version
@@ -31,24 +41,35 @@ RUN if [ "${FILE_LOCATION_SET}" = "true" ]; then \
     rm agent.zip
     
 # Install libgdiplus, used for smart detection
-RUN apt-get install -y libgdiplus
+RUN apt-get install -y libgdiplus 
 
 # Install ffmpeg
+# NOTE: Added unzip wget libnuma1 libnuma-dev as per https://docs.nvidia.com/video-technologies/video-codec-sdk/11.1/ffmpeg-with-nvidia-gpu/index.html
 RUN apt-get install -y build-essential xz-utils yasm cmake libtool libc6 libc6-dev \
  pkg-config libx264-dev libx265-dev libmp3lame-dev libopus-dev \
- libvorbis-dev libfdk-aac-dev libvpx-dev libva-dev
+ libvorbis-dev libfdk-aac-dev libvpx-dev libva-dev \
+ unzip wget libnuma1 libnuma-dev
 
-RUN wget https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.gz &&\
-tar xf ffmpeg-6.1.1.tar.gz &&\
-cd ffmpeg-6.1.1 && \
+# NOTE: Use the 'wget' method if you want a specific version of ffmpeg.
+#RUN wget https://ffmpeg.org/releases/ffmpeg-6.0.tar.gz &&\
+#tar xf ffmpeg-6.0.tar.gz &&\
+#cd ffmpeg-6.0 && \
+
+# NOTE: Using a git clone here; because v6.0 of ffmpeg is broken with respect to  --enable-hardcoded-tables
+# Does that matter? Dunno 
+RUN git clone https://git.ffmpeg.org/ffmpeg.git ffmpeg/ &&\
+cd ffmpeg && \
 ./configure --disable-debug \
  --disable-doc \
  --enable-shared \
  --enable-pthreads \
  --enable-hwaccels \
- --enable-hardcoded-tables \
+ # Broken in ffmpeg6.0 (works ok if pulling current from git direct)
+ --enable-hardcoded-tables \   
  --enable-vaapi \
  --enable-nonfree \
+ --enable-cuda-nvcc \
+ --enable-libnpp \
  --disable-static \
  --enable-gpl \
  --enable-libx264 \
@@ -57,7 +78,9 @@ cd ffmpeg-6.1.1 && \
  --enable-libvorbis \
  --enable-libfdk-aac \
  --enable-libx265 \
- --enable-libvpx && \
+ --enable-libvpx \
+ --extra-cflags=-I/usr/local/cuda/include \
+ --extra-ldflags=-L/usr/local/cuda/lib64 && \
  make -j 8 && \
  make install && \
  cd ..
@@ -91,6 +114,9 @@ RUN echo "Adding executable permissions" && \
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Fix a memory leak on encoded recording
 ENV MALLOC_TRIM_THRESHOLD_=100000
+
+# Make sure that all libraries are loaded into the container
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 
 # Main UI port
 EXPOSE 8090
